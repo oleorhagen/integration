@@ -571,6 +571,39 @@ TEST_SETS = [
             "Idle_Enter_09",
         ],
     },
+    {
+        "ExpectedStatus": "success", # the failing script should succeeed on the second try
+        # simulates a reboot using pkill -9 mender
+        "SpontanaeousRebootScript": ["ArtifactInstall_Enter_01"],
+        "ScriptOrder": [
+            "ArtifactInstall_Enter_01",
+            "ArtifactInstall_Enter_01", # will be rerun once the device reboots
+            "ArtifactInstall_Leave_01",
+            "ArtifactInstall_Leave_01", # will be rerun once the device reboots
+        ],
+    },
+    # test retry-later timeout
+    {
+        "ExpectedStatus": "failure",
+        "RetryLaterScript": ["ArtifactInstall_Enter_01"], # this script will request retry-later's indefinitely
+        "ScriptOrder": [
+            "ArtifactInstall_Enter_01", # TODO - how many times will it be retried?
+            "ArtifactInstall_Enter_01",
+            "ArtifactInstall_Leave_01",
+            "ArtifactInstall_Leave_01",
+        ],
+    },
+    # test timeout of a single script
+    {
+        "ExpectedStatus": "failure",
+        "TimeoutScript": ["ArtifactInstall_Enter_01"], # this script will enter an infinite loop
+        "ScriptOrder": [
+            "ArtifactInstall_Enter_01", # TODO - how many times will it be retried?
+            "ArtifactInstall_Enter_01",
+            "ArtifactInstall_Leave_01",
+            "ArtifactInstall_Leave_01",
+        ],
+    },
 ]
 
 class TestStateScripts(MenderTesting):
@@ -649,7 +682,11 @@ class TestStateScripts(MenderTesting):
             script_content = '#!/bin/sh\n\necho "$(basename $0)" >> /data/test_state_scripts.log\n'
             script_failure_content = script_content + "exit 1\n"
 
-            old_active = Helpers.get_active_partition()
+            reboot_script = "#!/bin/bash \n if [ ! -f %s/scriptflag ]; then\n echo f > %[1]s/scriptflag\n pkill -9 mender \nfi \n rm -f %[1]s/scriptflag\n exit 0" % artifact_script_dir
+            retry_later_script = "#!/bin/bash \n exit 21\n"
+            timeout_script = "#!/bin/bash \n while :\n do\n sleep 1 \n done\n"
+
+            oldactive = Helpers.get_active_partition()
 
             # Make rootfs-scripts and put them in rootfs image.
             rootfs_script_dir = os.path.join(work_dir, "rootfs-scripts")
@@ -677,6 +714,12 @@ class TestStateScripts(MenderTesting):
                 with open(os.path.join(rootfs_script_dir, script), "w") as fd:
                     if script in test_set['FailureScript']:
                         fd.write(script_failure_content)
+                    elif script in test_set['SpontanaeousRebootScript']:
+                        fd.write(reboot_script)
+                    elif script in test_set['RetryLaterScript']:
+                        fd.write(retry_later_script)
+                    elif script in test_set['TimeoutScript']:
+                        fd.write(timeout_script)
                     else:
                         fd.write(script_content)
                     os.fchmod(fd.fileno(), 0755)
@@ -723,6 +766,12 @@ class TestStateScripts(MenderTesting):
                         fd.write("fw_setenv bootcount 1\n")
                     if test_set.get("CorruptDataScriptVersionIn") == script:
                         fd.write("printf '1000' > /data/mender/scripts/version\n")
+                    if script in test_set["SpontanaeousRebootScript"]:
+                        fd.write(reboot_script) # nuke
+                    if script in test_set['RetryLaterScript']:
+                        fd.write(retry_later_script)
+                    if script in test_set['TimeoutScript']:
+                        fd.write(timeout_script)
 
             # Now create the artifact, and make the deployment.
             device_id = Helpers.ip_to_device_id_map([client])[client]
@@ -751,11 +800,6 @@ class TestStateScripts(MenderTesting):
                     except:
                         time.sleep(10)
                         continue
-                else:
-                    # TODO REMOVE
-                    if True in ["Error" in state for state in test_set['ScriptOrder']]:
-                        output = run("cat /data/test_state_scripts.log")
-                        assert False, 'Waited too long for "Error" to appear in log:\n%s' % output
             else:
                 deploy.check_expected_statistics(deployment_id, test_set['ExpectedStatus'], 1)
 
@@ -768,10 +812,6 @@ class TestStateScripts(MenderTesting):
 
             new_active = Helpers.get_active_partition()
             should_switch_partition = (test_set['ExpectedStatus'] == "success")
-
-            # TODO
-            if test_set.get('SwapPartitionExpectation') is not None:
-                should_switch_partition = not should_switch_partition
 
             if should_switch_partition:
                 assert old_active != new_active, "Device did not switch partition as expected!"
