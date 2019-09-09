@@ -1224,3 +1224,61 @@ def compare_aset(authset, api_authset):
        assert authset.id_data == api_authset['identity_data']
        assert util.crypto.rsa_compare_keys(authset.pubkey, api_authset['pubkey'])
        assert authset.status == api_authset['status']
+
+class TestDefaultTenantTokenEnterprise(object):
+
+    def test_default_tenant_token(self, user):
+        """Connect with a device without a tenant-token, and make sure it shows up in the default tenant account"""
+
+        default_tenant = create_tenant('default-tenant')
+
+        uc = ApiClient(useradm.URL_MGMT)
+        devauthd = ApiClient(deviceauth_v1.URL_DEVICES)
+        devauthm = ApiClient(deviceauth_v2.URL_MGMT)
+
+        r = uc.call('POST',
+                    useradm.URL_LOGIN,
+                    auth=(user.name, user.pwd))
+        assert r.status_code == 200
+        utoken = r.text
+
+        aset = create_random_authset(utoken)
+        dev = Device(aset.did, aset.id_data, aset.pubkey)
+
+        # actual device can obtain auth token
+        body, sighdr = deviceauth_v1.auth_req(dev.id_data,
+                                              dev.pubkey,
+                                              dev.privkey,
+                                              '') # Empty tenant token
+
+        r = devauthd.call('POST',
+                          deviceauth_v1.URL_AUTH_REQS,
+                          body,
+                          headers=sighdr)
+
+        assert r.status_code == 200
+
+        # Device should show up in the default tenant's account TODO -- how to test this?
+        # If the default-tenant is the empty string, then 
+
+        # device appears in device list
+        r = devauthm.with_auth(utoken).call('GET',
+                                            deviceauth_v2.URL_DEVICES)
+
+        assert r.status_code == 200
+        api_devs = r.json()
+
+        assert len(api_devs) == 1
+        api_dev = api_devs[0]
+
+        assert api_dev['status'] == 'pending'
+        print (api_dev)
+        pass
+
+    def test_valid_tenant_not_duplicated_for_default_tenant(self, tenants_users_devices):
+        """Verify that a valid tenant-token login does not show up in the default tenant's account"""
+        pass
+
+    def test_invalid_tenant_token_never_added(self):
+        """Verify that an invalid tenant token does not show up in any any tenant accounts"""
+        pass
